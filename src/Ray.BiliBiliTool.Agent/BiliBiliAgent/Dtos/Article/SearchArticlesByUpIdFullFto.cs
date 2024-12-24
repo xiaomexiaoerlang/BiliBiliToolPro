@@ -1,19 +1,21 @@
-﻿namespace Ray.BiliBiliTool.Agent.BiliBiliAgent.Dtos.Article;
+﻿using Ray.BiliBiliTool.Agent.BiliBiliAgent.Services;
 
-public class SearchArticlesByUpIdDto
+namespace Ray.BiliBiliTool.Agent.BiliBiliAgent.Dtos.Article;
+
+public class SearchArticlesByUpIdDto : IWrid
 {
-    public long Mid { get; set; }
+    public long mid { get; set; }
 
-    public int Pn { get; set; } = 1;
+    public int pn { get; set; } = 1;
 
-    public int Ps { get; set; } = 30;
+    public int ps { get; set; } = 12;
 
-    public string Sort { get; set; } = "publish_time";
-}
+    public string sort { get; set; } = "publish_time";
 
-public class SearchArticlesByUpIdFullDto : SearchArticlesByUpIdDto
-{
+    public long web_location { get; set; } = 1550101;
+
+    public string platform { get; set; } = "web";
+
     public string w_rid { get; set; }
-
     public long wts { get; set; }
 }

@@ -10,6 +10,7 @@ using Ray.BiliBiliTool.Agent;
 using Ray.BiliBiliTool.Agent.BiliBiliAgent.Dtos;
 using Ray.BiliBiliTool.Agent.BiliBiliAgent.Dtos.Article;
 using Ray.BiliBiliTool.Agent.BiliBiliAgent.Interfaces;
+using Ray.BiliBiliTool.Agent.BiliBiliAgent.Services;
 using Ray.BiliBiliTool.Config.Options;
 using Ray.BiliBiliTool.DomainService.Interfaces;
 
@@ -23,7 +24,7 @@ public class ArticleDomainService : IArticleDomainService
     private readonly DailyTaskOptions _dailyTaskOptions;
     private readonly ICoinDomainService _coinDomainService;
     private readonly IAccountApi _accountApi;
-    private readonly IWbiDomainService _wbiDomainService;
+    private readonly IWbiService _wbiService;
 
 
     /// <summary>
@@ -42,22 +43,21 @@ public class ArticleDomainService : IArticleDomainService
         ILogger<ArticleDomainService> logger,
         IOptionsMonitor<DailyTaskOptions> dailyTaskOptions,
         ICoinDomainService coinDomainService,
-        IAccountApi accountApi, IWbiDomainService wbiDomainService)
+        IAccountApi accountApi, IWbiService wbiService)
     {
         _articleApi = articleApi;
         _biliCookie = biliCookie;
         _logger = logger;
         _coinDomainService = coinDomainService;
         _accountApi = accountApi;
-        _wbiDomainService = wbiDomainService;
+        _wbiService = wbiService;
         _dailyTaskOptions = dailyTaskOptions.CurrentValue;
     }
 
 
-
     public async Task LikeArticle(long cvid)
     {
-        await _articleApi.Like(cvid, _biliCookie.BiliJct);
+        await _articleApi.LikeAsync(cvid, _biliCookie.BiliJct);
     }
 
     /// <summary>
@@ -66,7 +66,6 @@ public class ArticleDomainService : IArticleDomainService
     /// <returns></returns>
     public async Task<bool> AddCoinForArticles()
     {
-        
         var donateCoinsCounts = await CalculateDonateCoinsCounts();
 
         if (donateCoinsCounts == 0)
@@ -84,11 +83,17 @@ public class ArticleDomainService : IArticleDomainService
             _logger.LogDebug("开始尝试第{num}次", i);
 
             var upId = GetUpFromConfigUps();
-            var cvid = await GetRandomArticleFromUp(upId);
-            if (upId == 0 || cvid == 0)
+            if (upId == 0)
             {
-                _logger.LogInformation("未添加支持的Up主，任务跳过");
-                return false;
+                _logger.LogDebug("未能成功选择支持的Up主");
+                continue;
+            }
+            // 当upId不符合时，会直接报错，需要将两者的判断分隔开
+            var cvid = await GetRandomArticleFromUp(upId);
+            if (cvid == 0)
+            {
+                _logger.LogDebug("第{num}次尝试，未能成功选择合适的专栏",i);
+                continue;
             }
 
             if (await AddCoinForArticle(cvid, upId))
@@ -97,12 +102,11 @@ public class ArticleDomainService : IArticleDomainService
                 if (_dailyTaskOptions.SelectLike)
                 {
                     await LikeArticle(cvid);
-                    _logger.LogInformation("文章点赞成功");
+                    _logger.LogInformation("专栏点赞成功");
                 }
+
                 success++;
             }
-
-                
         }
 
         if (success == donateCoinsCounts)
@@ -112,14 +116,14 @@ public class ArticleDomainService : IArticleDomainService
             _logger.LogInformation("投币尝试超过10次，已终止");
             return false;
         }
-            
 
-        _logger.LogInformation("【硬币余额】{coin}", (await _accountApi.GetCoinBalance()).Data.Money ?? 0);
+
+        _logger.LogInformation("【硬币余额】{coin}", (await _accountApi.GetCoinBalanceAsync()).Data.Money ?? 0);
 
         return true;
     }
 
-    
+
     /// <summary>
     /// 给某一篇专栏投币
     /// </summary>
@@ -132,7 +136,7 @@ public class ArticleDomainService : IArticleDomainService
         try
         {
             var refer = $"https://www.bilibili.com/read/cv{cvid}/?from=search&spm_id_from=333.337.0.0";
-            result = await _articleApi.AddCoinForArticle(new AddCoinForArticleRequest(cvid, mid, _biliCookie.BiliJct),
+            result = await _articleApi.AddCoinForArticleAsync(new AddCoinForArticleRequest(cvid, mid, _biliCookie.BiliJct),
                 refer);
         }
         catch (Exception)
@@ -176,22 +180,13 @@ public class ArticleDomainService : IArticleDomainService
 
         var req = new SearchArticlesByUpIdDto()
         {
-            Mid = mid,
-            Ps = 1,
-            Pn = new Random().Next(1, articleCount + 1)
+            mid = mid,
+            ps = 1,
+            pn = new Random().Next(1, articleCount + 1)
         };
-        var w_ridDto = await _wbiDomainService.GetWridAsync(req);
+        await _wbiService.SetWridAsync(req);
 
-        var fullDto = new SearchArticlesByUpIdFullDto()
-        {
-            Mid = mid,
-            Ps = req.Ps,
-            Pn = req.Pn,
-            w_rid = w_ridDto.w_rid,
-            wts = w_ridDto.wts
-        };
-
-        BiliApiResponse<SearchUpArticlesResponse> re = await _articleApi.SearchUpArticlesByUpId(fullDto);
+        BiliApiResponse<SearchUpArticlesResponse> re = await _articleApi.SearchUpArticlesByUpIdAsync(req);
 
         if (re.Code != 0)
         {
@@ -200,7 +195,7 @@ public class ArticleDomainService : IArticleDomainService
 
         ArticleInfo articleInfo = re.Data.Articles.FirstOrDefault();
 
-        _logger.LogDebug("获取到的专栏{cvid}({title})", articleInfo.Id, articleInfo.Title);
+        _logger.LogInformation("获取到的专栏{cvid}({title})", articleInfo.Id, articleInfo.Title);
 
         // 检查是否可投
         if (!await IsCanDonate(articleInfo.Id))
@@ -236,7 +231,8 @@ public class ArticleDomainService : IArticleDomainService
                 _logger.LogDebug("不能为自己投币");
                 return 0;
             }
-            _logger.LogDebug("挑选出的up主为{UpId}",randomUpId);
+
+            _logger.LogDebug("挑选出的up主为{UpId}", randomUpId);
             return randomUpId;
         }
         catch (Exception e)
@@ -257,19 +253,12 @@ public class ArticleDomainService : IArticleDomainService
     {
         var req = new SearchArticlesByUpIdDto()
         {
-            Mid = mid
+            mid = mid
         };
 
-        var w_ridDto = await _wbiDomainService.GetWridAsync(req);
+        await _wbiService.SetWridAsync(req);
 
-        var fullDto = new SearchArticlesByUpIdFullDto()
-        {
-            Mid = mid,
-            w_rid = w_ridDto.w_rid,
-            wts = w_ridDto.wts
-        };
-
-        BiliApiResponse<SearchUpArticlesResponse> re = await _articleApi.SearchUpArticlesByUpId(fullDto);
+        BiliApiResponse<SearchUpArticlesResponse> re = await _articleApi.SearchUpArticlesByUpIdAsync(req);
 
         if (re.Code != 0)
         {
@@ -372,7 +361,7 @@ public class ArticleDomainService : IArticleDomainService
 
             if (!_alreadyDonatedCoinCountCatch.TryGetValue(cvid.ToString(), out int multiply))
             {
-                multiply = (await _articleApi.SearchArticleInfo(cvid)).Data.Coin;
+                multiply = (await _articleApi.SearchArticleInfoAsync(cvid)).Data.Coin;
                 _alreadyDonatedCoinCountCatch.TryAdd(cvid.ToString(), multiply);
             }
 
